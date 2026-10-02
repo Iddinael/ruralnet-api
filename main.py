@@ -5,6 +5,7 @@ Se despliega gratis en Render.com (ver GUIA-ACTUALIZACION.md).
 
 Endpoints:
   GET  /                -> Prueba rápida: {"estado": "RuralNet API funcionando", ...}
+  GET  /widget.js       -> JavaScript del formulario de WordPress
   GET  /calcular        -> Estudio (parámetros lat, lon): dBm y Mbps estimados por operador
   POST /registrar-lead  -> Guarda Nombre + WhatsApp y devuelve el mismo estudio
                            (es el que usa el formulario de WordPress)
@@ -24,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,7 +34,7 @@ log = logging.getLogger("ruralnet")
 LEADS_WEBHOOK_URL = os.getenv("LEADS_WEBHOOK_URL", "").strip()
 HORA_COLOMBIA = timezone(timedelta(hours=-5))
 
-app = FastAPI(title="RuralNet Colombia API", version="5.0.0")
+app = FastAPI(title="RuralNet Colombia API", version="5.1.0")
 
 # CORS global ('*') para que WordPress (o cualquier dominio) pueda consultar la API.
 app.add_middleware(
@@ -306,6 +308,19 @@ def validar_colombia(lat: float, lon: float) -> None:
 @app.get("/")
 def inicio():
     return {"estado": "RuralNet API funcionando", "version": app.version, "documentacion": "/docs"}
+
+
+WIDGET_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget.js")
+
+
+@app.get("/widget.js", include_in_schema=False)
+def widget_js():
+    """JavaScript del formulario de WordPress. Se sirve desde aquí porque WordPress altera
+    el JavaScript pegado dentro de los bloques HTML y rompe la página."""
+    if not os.path.exists(WIDGET_JS):
+        raise HTTPException(status_code=404, detail="widget.js no está en el servidor.")
+    return FileResponse(WIDGET_JS, media_type="application/javascript; charset=utf-8",
+                        headers={"Cache-Control": "public, max-age=300"})
 
 
 @app.get("/calcular")
