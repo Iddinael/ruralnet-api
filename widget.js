@@ -1,5 +1,5 @@
 /*!
- * RuralNet · Widget de estudio de señal (v5.1)
+ * RuralNet · Widget de estudio de señal (v5.2)
  * Lo sirve el backend en /widget.js para que WordPress no modifique el JavaScript.
  * La configuración (URL de la API, WhatsApp de ventas, política de datos) se lee de
  * los atributos data-* del elemento <div id="rnx-config"> del bloque HTML.
@@ -232,7 +232,7 @@
           '<div class="rnx-escala"><i data-pos="' + posicionEscala(o.dbm) + '%"></i></div>' +
           '<div class="rnx-escala-txt"><span>-120</span><span>-50 dBm</span></div>' +
           '<div class="rnx-diag"><span class="rnx-tag">' + esc(dg.etiqueta) + "</span>" +
-            '<span class="rnx-km">Torre a ' + esc(o.distancia_km.toFixed(1)) + " km</span></div>" +
+            '<span class="rnx-km">' + (o.torre_encontrada === false ? "Sin torre a menos de 60 km" : "Torre a " + esc(o.distancia_km.toFixed(1)) + " km") + "</span></div>" +
           '<div class="rnx-mbps-mini"><span>⚡ Velocidad</span><b>≈ ' + esc(o.ancho_banda.mbps_estimado) + "<small>Mbps</small></b></div>" +
           '<p class="rnx-explica">' + esc(dg.explicacion) + "</p>" +
         "</article>";
