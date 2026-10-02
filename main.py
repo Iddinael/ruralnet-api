@@ -15,6 +15,7 @@ Variable de entorno opcional (Render > Environment):
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import math
@@ -34,7 +35,7 @@ log = logging.getLogger("ruralnet")
 LEADS_WEBHOOK_URL = os.getenv("LEADS_WEBHOOK_URL", "").strip()
 HORA_COLOMBIA = timezone(timedelta(hours=-5))
 
-app = FastAPI(title="RuralNet Colombia API", version="5.1.0")
+app = FastAPI(title="RuralNet Colombia API", version="5.2.0")
 
 # CORS global ('*') para que WordPress (o cualquier dominio) pueda consultar la API.
 app.add_middleware(
@@ -98,36 +99,66 @@ ANTENA_PANEL = "Antena exterior tipo panel MIMO + 10 m de cable LMR-400"
 PRECIO_BASE_KIT = {28: 2_090_000, 5: 2_090_000, 4: 2_290_000}   # amplificador + router + instalación
 PRECIO_ANTENA = {"yagi": 320_000, "panel": 220_000}
 
-# Antenas SIMULADAS (ubicaciones ilustrativas, NO son datos reales de los operadores)
-TORRES = [
-    {"operador": "Claro",    "lat": 4.8640, "lon": -74.0330, "municipio": "Chía"},
-    {"operador": "Tigo",     "lat": 4.8590, "lon": -74.0590, "municipio": "Cajicá"},
-    {"operador": "Movistar", "lat": 4.8705, "lon": -74.0450, "municipio": "Chía"},
-    {"operador": "Claro",    "lat": 5.0255, "lon": -74.0050, "municipio": "Zipaquirá"},
-    {"operador": "Tigo",     "lat": 5.0310, "lon": -73.9930, "municipio": "Zipaquirá"},
-    {"operador": "Movistar", "lat": 5.0600, "lon": -73.9790, "municipio": "Cogua"},
-    {"operador": "Claro",    "lat": 5.3130, "lon": -73.8150, "municipio": "Ubaté"},
-    {"operador": "Tigo",     "lat": 5.3070, "lon": -73.8250, "municipio": "Ubaté"},
-    {"operador": "Movistar", "lat": 5.2470, "lon": -73.8530, "municipio": "Sutatausa"},
-    {"operador": "Claro",    "lat": 5.6180, "lon": -73.8170, "municipio": "Chiquinquirá"},
-    {"operador": "Tigo",     "lat": 5.6220, "lon": -73.8230, "municipio": "Chiquinquirá"},
-    {"operador": "Movistar", "lat": 5.6150, "lon": -73.8100, "municipio": "Chiquinquirá"},
-    {"operador": "Claro",    "lat": 5.6340, "lon": -73.5240, "municipio": "Villa de Leyva"},
-    {"operador": "Tigo",     "lat": 5.6000, "lon": -73.4900, "municipio": "Sáchica"},
-    {"operador": "Claro",    "lat": 5.5350, "lon": -73.3670, "municipio": "Tunja"},
-    {"operador": "Tigo",     "lat": 5.5440, "lon": -73.3570, "municipio": "Tunja"},
-    {"operador": "Movistar", "lat": 5.5300, "lon": -73.3610, "municipio": "Tunja"},
-    {"operador": "Claro",    "lat": 4.3370, "lon": -74.3640, "municipio": "Fusagasugá"},
-    {"operador": "Tigo",     "lat": 4.3420, "lon": -74.3700, "municipio": "Fusagasugá"},
-    {"operador": "Movistar", "lat": 4.4050, "lon": -74.3870, "municipio": "Silvania"},
-    {"operador": "Claro",    "lat": 4.6310, "lon": -74.4620, "municipio": "La Mesa"},
-    {"operador": "Tigo",     "lat": 4.5530, "lon": -74.5360, "municipio": "Anapoima"},
-    {"operador": "Claro",    "lat": 5.0060, "lon": -73.4720, "municipio": "Guateque"},
-    {"operador": "Movistar", "lat": 5.0820, "lon": -73.3640, "municipio": "Garagoa"},
-    {"operador": "Claro",    "lat": 7.1190, "lon": -73.1220, "municipio": "Bucaramanga"},
-    {"operador": "Tigo",     "lat": 6.2440, "lon": -75.5810, "municipio": "Medellín"},
-    {"operador": "Movistar", "lat": 3.4370, "lon": -76.5220, "municipio": "Cali"},
-]
+# Antenas REALES: torres.csv, generado con preparar_torres.py desde OpenCellID (CC BY-SA 4.0).
+# Posiciones estimadas a partir de mediciones de celulares (no la ubicación oficial del mástil).
+TORRES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torres.csv")
+# Torres que tú agregas a mano (las que conoces en campo y OpenCellID no tiene). Mismo formato.
+TORRES_MANUALES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torres_manuales.csv")
+CELDA_INDICE_GRADOS = 0.1      # Rejilla del índice espacial (≈ 11 km)
+RADIO_MAX_BUSQUEDA_KM = 60.0   # Más allá de esto se considera sin torre del operador
+
+
+def cargar_torres(*rutas: str) -> dict[str, dict[tuple[int, int], list[tuple[float, float, str]]]]:
+    """Carga los CSV de torres en un índice espacial: {operador: {(fila, col): [(lat, lon, tec), ...]}}."""
+    indice: dict[str, dict[tuple[int, int], list]] = {op: {} for op in ("Claro", "Tigo", "Movistar")}
+    total = 0
+    for ruta in rutas:
+        if not os.path.exists(ruta):
+            if ruta == TORRES_CSV:
+                log.error("No se encontró %s: súbelo a GitHub junto a main.py.", ruta)
+            continue
+        with open(ruta, encoding="utf-8", newline="") as f:
+            for fila in csv.DictReader(f):
+                try:
+                    op, lat, lon = fila["operador"].strip(), float(fila["lat"]), float(fila["lon"])
+                except (KeyError, ValueError, AttributeError):
+                    continue                                   # fila incompleta: se ignora
+                if op not in indice:
+                    continue
+                celda = (math.floor(lat / CELDA_INDICE_GRADOS), math.floor(lon / CELDA_INDICE_GRADOS))
+                indice[op].setdefault(celda, []).append((lat, lon, (fila.get("tecnologia") or "").strip()))
+                total += 1
+    log.info("Torres cargadas: %d %s", total, {op: sum(map(len, c.values())) for op, c in indice.items()})
+    return indice
+
+
+INDICE_TORRES = cargar_torres(TORRES_CSV, TORRES_MANUALES_CSV)
+
+
+def torre_mas_cercana(operador: str, lat: float, lon: float) -> tuple[float, str] | None:
+    """Busca en anillos crecientes del índice hasta que ningún anillo más lejano pueda mejorar el resultado."""
+    celdas = INDICE_TORRES.get(operador) or {}
+    if not celdas:
+        return None
+    f0, c0 = math.floor(lat / CELDA_INDICE_GRADOS), math.floor(lon / CELDA_INDICE_GRADOS)
+    km_por_anillo = CELDA_INDICE_GRADOS * 111.32 * max(math.cos(math.radians(lat)), 0.5)
+    mejor_d, mejor_tec = math.inf, ""
+    max_anillos = int(RADIO_MAX_BUSQUEDA_KM / km_por_anillo) + 2
+    for r in range(max_anillos + 1):
+        # Si ya hay candidata y el anillo r empieza más lejos que ella, no hay nada mejor.
+        if mejor_d < math.inf and (r - 1) * km_por_anillo > mejor_d:
+            break
+        for df in range(-r, r + 1):
+            for dc in range(-r, r + 1):
+                if max(abs(df), abs(dc)) != r:
+                    continue                      # sólo el borde del anillo
+                for (tlat, tlon, tec) in celdas.get((f0 + df, c0 + dc), ()):
+                    d = haversine_km(lat, lon, tlat, tlon)
+                    if d < mejor_d:
+                        mejor_d, mejor_tec = d, tec
+    if mejor_d > RADIO_MAX_BUSQUEDA_KM:
+        return None
+    return mejor_d, mejor_tec
 
 
 # ===========================================================================
@@ -258,17 +289,17 @@ def estudio_senal(lat: float, lon: float) -> dict:
     """Torre más cercana por operador, dBm estimados, diagnóstico y Kit recomendado."""
     operadores = []
     for nombre, rf in OPERADORES.items():
-        torre = min((t for t in TORRES if t["operador"] == nombre),
-                    key=lambda t: haversine_km(lat, lon, t["lat"], t["lon"]))
-        d = haversine_km(lat, lon, torre["lat"], torre["lon"])
-        dbm = calcular_intensidad_dbm(d, rf["frecuencia_mhz"])
+        hallada = torre_mas_cercana(nombre, lat, lon)
+        d, tec = hallada if hallada else (RADIO_MAX_BUSQUEDA_KM, "")
+        dbm = calcular_intensidad_dbm(d, rf["frecuencia_mhz"]) if hallada else DBM_MIN
         operadores.append({
             "operador": nombre,
             "banda": rf["banda"],
             "frecuencia_mhz": rf["frecuencia_mhz"],
             "banda_texto": f"Banda {rf['banda']} · {rf['frecuencia_mhz']} MHz",
             "distancia_km": round(d, 2),
-            "torre_referencia": torre["municipio"],
+            "torre_tecnologia": tec,
+            "torre_encontrada": hallada is not None,
             "dbm": dbm,
             "dbm_texto": f"{dbm:.0f} dBm",
             "diagnostico": diagnostico(dbm),
@@ -293,7 +324,8 @@ def estudio_senal(lat: float, lon: float) -> dict:
         "moneda": "COP",
         "aviso": ("Señal y velocidad estimadas por modelo de propagación con antenas de referencia; no son una "
                   "garantía de servicio. La velocidad real depende del relieve, la congestión de la red y tu plan "
-                  "de datos. Un técnico de RuralNet mide la señal real antes de instalar."),
+                  "de datos. Un técnico de RuralNet mide la señal real antes de instalar. Datos de antenas: OpenCellID "
+                  "(CC BY-SA 4.0), posiciones estimadas."),
     }
 
 
